@@ -3,102 +3,20 @@ import os
 import traceback
 import pandas as pd
 from db.connection import get_db_connection, close_db_connection
-from services.cleanup_service import delete_non_monday_weekly, delete_files_in_folder
+from services.cleanup_service import delete_invalid_timeframe_rows, delete_files_in_folder
 from config.paths import YAHOO_INDEX_DIR
 from config.logger import log
-# from services.symbol_service import retrieve_equity_symbol
+from services.yahoo_service import download_index_yahoo_data_all_timeframes
 from config.paths import FREQUENCIES
+
 #################################################################################################
-# Downloads historical price data from Yahoo Finance for all active indices across
-# all defined timeframes, and saves each dataset as a CSV file grouped by timeframe.
-# Process:
-#   1. Retrieve all active indices and their Yahoo symbols from `index_symbols`.
-#   2. For each timeframe (1d, 1wk, 1mo, etc.):
-#         - Ensure the timeframe folder exists under YAHOO_FILES_INDEX.
-#         - Download full historical price data (`period="max"`) for each index.
-#         - Flatten multi-index columns if present, reset index, and export to CSV.
-#   3. Logs progress and errors throughout.
-
-# This function generates fresh CSV data for indices, ready for database import.
-#################################################################################################       
-def download_index_yahoo_data_all_timeframes():
-    try:
-        conn = get_db_connection()
-
-        # --- fetch active indices ---
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT index_id, index_code, yahoo_symbol
-            FROM index_symbols
-            WHERE is_active = 1
-        """)
-        indices = cur.fetchall()
-
-        if not indices:
-            log("NO ACTIVE INDICES FOUND")
-            return
-
-        for timeframe in FREQUENCIES:
-            log(f"===== DOWNLOADING full '{timeframe}' data for all indices =====")
-
-            # --- create folder for timeframe ---
-            timeframe_path = os.path.join(YAHOO_INDEX_DIR, timeframe)
-            os.makedirs(timeframe_path, exist_ok=True)
-
-            for index_id, index_code, yahoo_symbol in indices:
-                csv_path = os.path.join(timeframe_path, f"{index_code}.csv")
-                log(f"Downloading {yahoo_symbol} | {timeframe}")
-
-                try:
-                    # full download from yahoo
-                    df = yf.download(
-                        yahoo_symbol,
-                        period="max",
-                        interval=timeframe,
-                        auto_adjust=False,
-                        progress=False
-                    )
-
-                    if df is None or df.empty:
-                        log(f"{index_code} | {timeframe} | NO DATA")
-                        continue
-
-                    # drop multi-index column level
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = df.columns.droplevel(1)
-
-                    # reset index for CSV export
-                    df.reset_index(inplace=True)
-
-                    df.to_csv(csv_path, index=False)
-                    # log(f"{index_code} | {timeframe} | SAVED -> {csv_path} ({len(df)} rows)")
-
-                except Exception as e:
-                    log(f"❌ DOWNLOAD FAILED | {index_code} {timeframe} | {e}")
-
-        log("🎉 CSV EXPORT COMPLETE FOR ALL INDICES + ALL TIMEFRAMES")
-
-    except Exception as e:
-        log(f"INDEX CSV DOWNLOAD FAILED: {e}")
-
-    finally:
-        close_db_connection(conn)  
-#################################################################################################
-# Reads downloaded index CSV files for each timeframe, matches them to index IDs,
-# and imports the price data into the `index_price_data` table.
-# Process:
-#   1. Loop through all defined timeframes.
-#   2. For each timeframe, scan its CSV files.
-#   3. Validate each index code against `index_symbols` to get `index_id`.
-#   4. Load and clean CSV data (standardize dates, round numeric values).
-#   5. Insert or update rows in `index_price_data` using upsert logic.
-#   6. Logs progress and errors throughout.
-
-# Automatically creates or updates all historical index price records in the database.
+# Imports Yahoo-downloaded index CSV files across all timeframes into the 
+# index_price_data table using upsert logic with full validation and logging.
 #################################################################################################  
 def import_index_csv_to_db():
     try:
         conn = get_db_connection()
+        cur = conn.cursor()
 
         for timeframe in FREQUENCIES:
             timeframe_path = os.path.join(YAHOO_INDEX_DIR, timeframe)
@@ -110,14 +28,13 @@ def import_index_csv_to_db():
 
             # Iterate over all CSV files in this timeframe folder
             for csv_file in os.listdir(timeframe_path):
-                if not csv_file.endswith(".csv"):
+                if not csv_file.lower().endswith(".csv"):
                     continue
 
                 csv_path = os.path.join(timeframe_path, csv_file)
                 index_code = os.path.splitext(csv_file)[0]
 
                 # Lookup index_id
-                cur = conn.cursor()
                 cur.execute("SELECT index_id FROM index_symbols WHERE index_code = ?", (index_code,))
                 res = cur.fetchone()
                 if not res:
@@ -130,7 +47,9 @@ def import_index_csv_to_db():
                     if df.empty:
                         log(f"{index_code} | {timeframe} | CSV empty, skipping")
                         continue
-
+                    if "Date" not in df.columns:
+                        log(f"{index_code} | {timeframe} | Missing Date column, skipping")
+                        continue
                     # Clean column names
                     df.columns = [c.strip() for c in df.columns]
 
@@ -188,32 +107,38 @@ def import_index_csv_to_db():
     finally:
         close_db_connection(conn)
 #################################################################################################
-# Downloads index price data from Yahoo for all timeframes, imports the CSV data
-# into the database, and cleans weekly data by deleting entries that are not Mondays.
-# Execution flow:
-#   1. Download index data from Yahoo.
-#   2. Import downloaded CSV files into `index_price_data`.
-#   3. Remove weekly rows where the date is not Monday.
-# Logs progress and errors throughout.
+# Downloads index price data from Yahoo, imports it into the database, 
+# cleans invalid weekly/monthly rows, and removes processed CSV files.
 #################################################################################################  
 def insert_index_price_data():
     try:
         log(f"===== YAHOO DOWNLOAD STARTED =====")
+        print(f"===== YAHOO DOWNLOAD STARTED =====")
         download_index_yahoo_data_all_timeframes()
+        print(f"===== YAHOO DOWNLOAD FINISHED =====")
         log(f"===== YAHOO DOWNLOAD FINISHED =====")
+        
         log(f"===== CSV TO DATABASE IMPORT STARTED =====")
+        print(f"===== CSV TO DATABASE IMPORT STARTED =====")
         import_index_csv_to_db()
+        print(f"===== CSV TO DATABASE IMPORT FINISHED =====")
         log(f"===== CSV TO DATABASE IMPORT FINISHED =====")
-        log(f"===== DELETE NON MONDAY FOR WEEK STARTED =====")
-        delete_non_monday_weekly(is_index=True)
-        log(f"===== DELETE NON MONDAY FOR WEEK FINISHED =====")
-        # log(f"===== UPDATE 52 WEEK STAT STARTED =====")
-        # refresh_52week_stats()
-        # log(f"===== UPDATE 52 WEEK STAT FINISHED =====")
+        
+        log(f"===== DELETE INVALID ROWS FOR WEEK & MONTH STARTED =====")
+        print(f"===== DELETE INVALID ROWS FOR WEEK & MONTH STARTED =====")
+        delete_invalid_timeframe_rows("1wk", is_index=True)
+        delete_invalid_timeframe_rows("1mo", is_index=True)
+        print(f"===== DELETE INVALID ROWS FOR WEEK & MONTH FINISHED =====")
+        log(f"===== DELETE INVALID ROWS FOR WEEK & MONTH FINISHED =====")
+        
         log(f"===== DELETE FILES FROM WEEKLY AND MONTHLY FOLDERS STARTED =====")
+        print(f"===== DELETE FILES FROM WEEKLY AND MONTHLY FOLDERS STARTED =====")
         for timeframe in FREQUENCIES:
             folder_path = os.path.join(YAHOO_INDEX_DIR, timeframe)
             delete_files_in_folder(folder_path)
+        print(f"===== DELETE FILES FROM WEEKLY AND MONTHLY FOLDERS FINISHED =====")
         log(f"===== DELETE FILES FROM WEEKLY AND MONTHLY FOLDERS FINISHED =====")
+    
     except Exception as e:
-        log(f"DOWNLOAD FAILED: {e}")   
+        log(f"ERROR: {e}")   
+        traceback.print_exc()

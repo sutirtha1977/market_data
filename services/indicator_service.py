@@ -10,6 +10,7 @@ from db.sql import SQL_INSERT
 import pandas as pd
 import traceback
 import time
+import sys
 
 #################################################################################################
 # Calculate Indicators

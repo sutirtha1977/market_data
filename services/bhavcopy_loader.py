@@ -3,7 +3,7 @@ import requests
 import traceback
 import shutil
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,date
 from db.connection import get_db_connection, close_db_connection
 from services.cleanup_service import delete_files_in_folder
 from services.symbol_service import (
@@ -56,10 +56,19 @@ def download_bhavcopy(date_str=None):
 def download_missing_bhavcopies(override_date=None):
     log("🚀 Starting bhavcopy download process...")
 
-    latest_date = get_latest_equity_date()
     if override_date:
-        latest_date = datetime.strptime(override_date, "%Y-%m-%d").date()
+        if isinstance(override_date, str):
+            latest_date = datetime.strptime(override_date, "%Y-%m-%d").date()
+        elif isinstance(override_date, datetime):
+            latest_date = override_date.date()
+        elif isinstance(override_date, date):
+            latest_date = override_date
+        else:
+            raise ValueError(f"Unsupported override_date type: {type(override_date)}")
+
         log(f"⚠ OVERRIDE latest date: {latest_date}")
+    else:
+        latest_date = get_latest_equity_date()
     # if DB empty or override empty case
     if latest_date is None:
         log("⚠ No price data found in DB. Starting fresh from today-30days.")
@@ -401,14 +410,12 @@ def update_hist_delv_pct_from_bhavcopy():
             except Exception as e:
                 print(f"❌ Failed reading {file_name}: {e}")
 
-        # conn.commit()
-        # conn.close()
+        conn.commit()
         print("🎉 Done updating delivery percentages.")
     except Exception as e:
         log(f"❗ ERROR during update: {e}")
         traceback.print_exc(0)
     finally:
-        conn.commit()
         close_db_connection(conn)
 #################################################################################################
 # Finds the latest date where delivery % is missing, downloads only those bhavcopies, 
@@ -417,14 +424,35 @@ def update_hist_delv_pct_from_bhavcopy():
 def update_latest_delv_pct_from_bhavcopy():
     try:
         latest_date = get_latest_equity_date_no_delv()
-        if latest_date is not None:
-            latest_date_str = latest_date.strftime("%Y-%m-%d")
+
+        # ✅ NULL GUARD — nothing to update
+        if latest_date is None:
+            log("✔ All delivery percentages already present. Nothing to update.")
+            return
+
+        latest_date_str = latest_date.strftime("%Y-%m-%d")
+
+        log(f"🔍 Missing delv_pct detected after {latest_date_str}")
+        
+        log(f"===== DOWNLOAD MISSING BHAVCOPY STARTED =====")
+        print(f"===== DOWNLOAD MISSING BHAVCOPY STARTED =====")
         download_missing_bhavcopies(latest_date_str)
+        print(f"===== DOWNLOAD MISSING BHAVCOPY FINISHED =====")
+        log(f"===== DOWNLOAD MISSING BHAVCOPY FINISHED =====")
+
+        log(f"===== UPDATE EQUITY DELIVERY PERCENTAGE STARTED =====")
+        print(f"===== UPDATE EQUITY DELIVERY PERCENTAGE STARTED =====")
         update_equity_delv_pct_from_bhavcopy()
+        print(f"===== UPDATE EQUITY DELIVERY PERCENTAGE FINISHED =====")
+        log(f"===== UPDATE EQUITY DELIVERY PERCENTAGE FINISHED =====")
+        
+        log(f"===== DELETING FILES STARTED =====")
+        print(f"===== DELETING FILES STARTED =====")
         delete_files_in_folder(BHAVCOPY_DIR)
+        print(f"===== DELETING FILES FINISHED =====")
+        log(f"===== DELETING FILES FINISHED =====")
+        
     except Exception as e:
         log(f"❗ ERROR: {e}")
         traceback.print_exc(0)
         
-# if __name__ == "__main__":
-#     update_hist_delv_pct_from_bhavcopy()
