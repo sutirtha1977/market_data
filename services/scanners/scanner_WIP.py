@@ -3,10 +3,13 @@ import pandas as pd
 from .data_service import get_base_data
 from .export_service import export_to_csv
 
-def scanner_WIP() -> pd.DataFrame:
+def scanner_WIP(start_date: str | None = None) -> pd.DataFrame:
     """Work-in-progress scanner."""
     try:
-        df = get_base_data()
+        lookback_days = 365
+        
+        df = get_base_data(lookback_days=lookback_days, start_date=start_date)
+        
         df_filtered = df[
             (df['adj_close'] >= 100) &
             (df['rsi_9'] / df['ema_rsi_9_3'] > 1.1) &
