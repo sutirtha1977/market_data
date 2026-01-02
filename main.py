@@ -2,7 +2,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.prompt import Prompt
-from typing import Optional
 from config.logger import log, clear_log
 from config.nse_constants import MAIN_MENU_ITEMS, FREQ_COLORS
 from services.symbol_service import (
@@ -22,13 +21,11 @@ from services.bhavcopy_loader import (
     update_hist_delv_pct_from_bhavcopy,
     update_latest_delv_pct_from_bhavcopy
 )
-from services.weekly_monthly_service import (
-    download_daily_weekly_monthly_data
-)
+from services.incremental_service import incr_yahoo_bhavcopy_download
 from services.scanners.backtest_service import backtest_scanner
 from services.scanners.scanner_HM import scanner_hilega_milega
 from services.scanners.scanner_WIP import scanner_WIP
-from create_db import create_stock_database
+from db.create_db import create_stock_database
 
 console = Console()
 
@@ -108,32 +105,38 @@ def action_refresh_indicators() -> None:
     refresh_indicators()
     console.print("[bold green]Refresh Indicators Finish....[/bold green]")
 
-def action_download_bhavcopy_update() -> None:
+def action_incr_price_data_update() -> None:
     clear_log()
-    # Ask user for optional date
-    user_date = Prompt.ask(
-        "Enter start date (YYYY-MM-DD) or press Enter for auto-detect",
-        default=""       # ensures empty Enter returns ""
-    ).strip()
-    override_date = user_date if user_date else None
     console.print("[bold green]Download BhavCopy and Update Equity Price Table Start....[/bold green]")
-    download_daily_weekly_monthly_data(override_date=override_date)
+    syms = Prompt.ask("Enter symbols (ALL or comma-separated, e.g., RELIANCE,TCS)").upper()
+    incr_yahoo_bhavcopy_download(syms)
     console.print("[bold green]Download BhavCopy and Update Equity Price Table Finish....[/bold green]")
 
 def action_scanner(scanner_type: str) -> None:
     clear_log()
     log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
     if scanner_type == "HM":
-        df = scanner_hilega_milega()
+        user_date = Prompt.ask(
+            "Enter start date (YYYY-MM-DD) or press Enter for auto-detect",
+            default=""       # ensures empty Enter returns ""
+        ).strip()
+        df = scanner_hilega_milega(user_date)
     elif scanner_type == "WIP":
-        df = scanner_WIP()
+        user_date = Prompt.ask(
+            "Enter start date (YYYY-MM-DD) or press Enter for auto-detect",
+            default=""
+        ).strip()
+        df = scanner_WIP(user_date)
     print_df_rich(df)
 
 def action_backtest() -> None:
     clear_log()
     log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
-    syms_input = Prompt.ask("[bold cyan]Enter Scanner File Name[/]")
-    backtest_scanner(syms_input)
+    scanner_file = Prompt.ask("Enter Scanner CSV file name (e.g., Scanner_HM_01Jan2026.csv)").strip()
+    if not scanner_file:
+        console.print("[bold red]❌ No file entered. Exiting action.[/bold red]")
+        return
+    backtest_scanner(scanner_file)
     
 def action_delv_pct_hist() -> None:
     clear_log()
@@ -165,12 +168,10 @@ def data_manager_user_input() -> None:
                 "4": action_refresh_indicators,
                 "5": action_delv_pct_hist,
                 "6": action_delv_pct_latest,
-                "7": action_download_bhavcopy_update,
-                "8": action_refresh_52week_stats,
-                "9": action_refresh_indicators,
-                "10": lambda: action_scanner("HM"),
-                "11": lambda: action_scanner("WIP"),
-                "12": action_backtest,
+                "7": action_incr_price_data_update,
+                "8": lambda: action_scanner("HM"),
+                "9": lambda: action_scanner("WIP"),
+                "10": action_backtest,
             }
 
             func = actions.get(choice)

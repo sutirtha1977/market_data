@@ -1,3 +1,25 @@
+CHECK IF ANY DATA MISSING IN HISTORICAL DATA
+SELECT
+    symbol_id,
+    timeframe,
+    date,
+    (open      IS NULL) AS open_missing,
+    (high      IS NULL) AS high_missing,
+    (low       IS NULL) AS low_missing,
+    (close     IS NULL) AS close_missing,
+    (adj_close IS NULL) AS adj_close_missing,
+    (volume    IS NULL) AS volume_missing
+FROM equity_price_data
+WHERE timeframe IN ('1d', '1wk', '1mo')
+  AND (
+        open IS NULL
+     OR high IS NULL
+     OR low IS NULL
+     OR close IS NULL
+     OR adj_close IS NULL
+     OR volume IS NULL
+  );
+_________________________________________________
 SELECT 
     date,
     CASE strftime('%w', date)
@@ -48,6 +70,16 @@ LEFT JOIN equity_price_data p
     AND p.date = '2025-12-31'
 WHERE p.symbol_id IS NULL
 ORDER BY e.symbol;
+________________________________________________
+
+            (df['adj_close'] >= 100) &
+            (df['rsi_3'] / df['rsi_9'] >= 1.15) &
+            (df['rsi_9'] / df['ema_rsi_9_3'] >= 1.05) &
+            (df['ema_rsi_9_3'] / df['wma_rsi_9_21'] >= 1) &
+            (df['rsi_3'] < 60) &
+            (df['rsi_3_weekly'] > 50) &
+            (df['rsi_3_monthly'] > 50) &
+            (df['pct_price_change'] <= 5)
 _________________________________________________
 Bhavcopy link
 https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_26122025.csv
