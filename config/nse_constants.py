@@ -3,22 +3,22 @@
 # ---------------- Menu and colors ----------------
 FREQ_COLORS = {
     "Run Once": "bold blue",
-    "Run Daily": "bold yellow",
-    "Run As Required": "bold green",
+    "Run Daily": "bold green",
+    "Run As Required": "bold yellow",
     "": "white"
 }
 
 MAIN_MENU_ITEMS = [
     ("1", "Create Database, Update Equity and Index Symbols", "Run Once", "red"),
     ("2", "Download Equity and Index data (Yahoo) and update equity and index price tables", "Run Once", "blue"),
-    ("3", "Update 52 weeks stats", "Run Daily", "yellow"),
-    ("4", "Update Equity and Index Indicators", "Run Daily", "yellow"),
-    ("5", "Update Delivery % till 29-Dec-2025", "Run Once", "yellow"),
-    ("6", "Update Delivery % till Latest DB Date", "Run Once", "blue"),
+    ("3", "Update Delivery % till 29-Dec-2025", "Run Once", "yellow"),
+    ("4", "Update Delivery % till Latest DB Date", "Run Once", "blue"),
+    ("5", "Update 52 weeks stats", "Run Daily", "yellow"),
+    ("6", "Update Equity and Index Indicators", "Run Daily", "yellow"),
     ("7", "Download Yahoo data and Bhavcopy incemental", "Run Daily", "yellow"),
     ("8", "SCANNER: Hilega Milega", "Run Daily", "yellow"),
-    ("9", "SCANNER: WIP", "Run Daily", "yellow"),
-    ("10", "Backtest SCANNER: File Name", "Run Daily", "yellow"),
+    ("9", "SCANNER: Playground", "Run As Required", "yellow"),
+    # ("10", "Backtest SCANNER: File Name", "Run As Required", "yellow"),
     ("0", "Exit", "", "white"),
 ]
 # ---------------- NSE Indices ----------------
