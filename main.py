@@ -22,9 +22,9 @@ from services.bhavcopy_loader import (
     update_latest_delv_pct_from_bhavcopy
 )
 from services.incremental_service import incr_yahoo_bhavcopy_download
-from services.scanners.backtest_service import backtest_scanner
+from services.scanners.backtest_service import backtest_all_scanners
 from services.scanners.scanner_HM import scanner_hilega_milega
-from services.scanners.scanner_WIP import scanner_WIP
+from services.scanners.scanner_play import scanner_play_multi_years
 from db.create_db import create_stock_database
 
 console = Console()
@@ -95,6 +95,16 @@ def action_update_equity_index_prices() -> None:
         insert_index_price_data()
         console.print("[bold green]Index Price Data Update Finish....[/bold green]")
 
+def action_delv_pct_hist() -> None:
+    clear_log()
+    log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
+    update_hist_delv_pct_from_bhavcopy()
+
+def action_delv_pct_latest() -> None:
+    clear_log()
+    log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
+    update_latest_delv_pct_from_bhavcopy()
+
 def action_refresh_52week_stats() -> None:
     console.print("[bold green]Update 52 weeks statistics Start....[/bold green]")
     refresh_52week_stats()
@@ -121,32 +131,27 @@ def action_scanner(scanner_type: str) -> None:
             default=""       # ensures empty Enter returns ""
         ).strip()
         df = scanner_hilega_milega(user_date)
+        print(df.head())
     elif scanner_type == "WIP":
-        user_date = Prompt.ask(
-            "Enter start date (YYYY-MM-DD) or press Enter for auto-detect",
-            default=""
-        ).strip()
-        df = scanner_WIP(user_date)
-    print_df_rich(df)
+        user_year = Prompt.ask("Enter start year:", default="2026").strip()
+        user_lookback = Prompt.ask("Enter lookback count:", default="15").strip()
+        try:
+            lookback_count = int(user_lookback)
+        except ValueError:
+            print(f"❌ Invalid lookback input: {user_lookback}")
+            lookback_count = 0  # fallback default
+        print(f"Start Year: {user_year}, Lookback: {lookback_count}")
+        scanner_play_multi_years(user_year,lookback_count)
 
-def action_backtest() -> None:
-    clear_log()
-    log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
-    scanner_file = Prompt.ask("Enter Scanner CSV file name (e.g., Scanner_HM_01Jan2026.csv)").strip()
-    if not scanner_file:
-        console.print("[bold red]❌ No file entered. Exiting action.[/bold red]")
-        return
-    backtest_scanner(scanner_file)
-    
-def action_delv_pct_hist() -> None:
-    clear_log()
-    log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
-    update_hist_delv_pct_from_bhavcopy()
-
-def action_delv_pct_latest() -> None:
-    clear_log()
-    log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
-    update_latest_delv_pct_from_bhavcopy()
+# def action_backtest() -> None:
+#     clear_log()
+#     log("SYMBOL | TIMEFRAME | STATUS\n" + "-" * 40 + "\n")
+#     # scanner_file = Prompt.ask("Enter Scanner CSV file name (e.g., Scanner_HM_01Jan2026.csv)").strip()
+#     # if not scanner_file:
+#     #     console.print("[bold red]❌ No file entered. Exiting action.[/bold red]")
+#     #     return
+#     df = backtest_all_scanners()
+#     print(df)
 
 #################################################################################################
 # MAIN LOOP
@@ -164,14 +169,14 @@ def data_manager_user_input() -> None:
             actions = {
                 "1": action_create_db,
                 "2": action_update_equity_index_prices,
-                "3": action_refresh_52week_stats,
-                "4": action_refresh_indicators,
-                "5": action_delv_pct_hist,
-                "6": action_delv_pct_latest,
+                "3": action_delv_pct_hist,
+                "4": action_delv_pct_latest,
+                "5": action_refresh_52week_stats,
+                "6": action_refresh_indicators,
                 "7": action_incr_price_data_update,
                 "8": lambda: action_scanner("HM"),
                 "9": lambda: action_scanner("WIP"),
-                "10": action_backtest,
+                # "10": action_backtest,
             }
 
             func = actions.get(choice)
