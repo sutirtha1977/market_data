@@ -1,5 +1,5 @@
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from services.cleanup_service import delete_files_in_folder
 from services.scanners.export_service import export_to_csv
@@ -115,81 +115,40 @@ def apply_scanner_logic(start_date: str, end_date: str) -> pd.DataFrame:
 # Runs the weekly momentum scanner for a given date range, exports results to CSV, 
 # and returns the signals as a DataFrame.
 #################################################################################################
-def run_scanner(start_date: str, end_date: str, file_name: str = "HM") -> pd.DataFrame:
+def run_scanner_weekly(start_date: str | None = None) -> pd.DataFrame:
     try:
-        if not start_date or not end_date:
-            log("❌ start_date or end_date not provided")
-            return pd.DataFrame()
+        # -------------------- CALCULATE DATES --------------------
+        today = datetime.today()
+        end_date_dt = today
+        start_date_dt = today - timedelta(days=LOOKBACK_DAYS)
 
-        log(f"🔍 Running weekly scanner from {start_date} to {end_date}")
-        df_signals = apply_scanner_logic(start_date, end_date)
+        # Override with passed start_date if provided
+        if start_date:
+            start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
+
+        # Format dates as strings for SQL
+        start_date_str = start_date_dt.strftime("%Y-%m-%d")
+        end_date_str = end_date_dt.strftime("%Y-%m-%d")
+
+        # -------------------- CLEAN SCANNER FOLDER --------------------
+        log("🧹 Clearing scanner folder...")
+        delete_files_in_folder(SCANNER_FOLDER)
+
+        # -------------------- RUN SCANNER --------------------
+        log(f"🔍 Running weekly scanner from {start_date_str} to {end_date_str}")
+        df_signals = apply_scanner_logic(start_date_str, end_date_str)
 
         if df_signals.empty:
-            log(f"⚠ No weekly momentum signals found for {start_date} to {end_date}")
+            log(f"⚠ No weekly momentum signals found for {start_date_str} to {end_date_str}")
             return pd.DataFrame()
 
-        path = export_to_csv(df_signals, SCANNER_FOLDER, file_name)
-        log(f"✅ Scanner results saved to: {path}")
+        # -------------------- EXPORT RESULTS --------------------
+        path = export_to_csv(df_signals, SCANNER_FOLDER, "WEEKLY")
+        log(f"✅ Hilega-Milega scanner results saved to: {path}")
 
         return df_signals
 
     except Exception as e:
         log(f"❌ run_scanner failed | {e}")
-        traceback.print_exc()
-        return pd.DataFrame()
-
-#################################################################################################
-# Runs the weekly momentum scanner across multiple years, combining yearly results 
-# into a single DataFrame and optionally performing a backtest.
-#################################################################################################
-def scanner_play_multi_years(start_year: str, lookback_years: int):
-    try:
-        # ---------------- CLEAN SCANNER FOLDER ----------------
-        print(f"===== DELETE FILES FROM SCANNER FOLDER STARTED =====")
-        delete_files_in_folder(SCANNER_FOLDER)
-        print(f"===== DELETE FILES FROM SCANNER FOLDER FINISHED =====")
-
-        # ---------------- PARSE START YEAR ----------------
-        try:
-            start_year_int = int(start_year)
-        except ValueError:
-            print(f"❌ Invalid start year '{start_year}', defaulting to 2025")
-            start_year_int = 2025
-
-        all_years_results = []
-
-        # ---------------- LOOP THROUGH YEARS ----------------
-        for i in range(lookback_years):
-            year = start_year_int - i
-            start_date = datetime(year, 1, 1).strftime("%Y-%m-%d")   # First day of the year
-            end_date   = datetime(year, 12, 31).strftime("%Y-%m-%d") # Last day of the year
-
-            print(f"\n🔹 Running scanner for year {year} ({start_date} to {end_date})")
-
-            # Scanner call — we only pass start_date, scanner will handle lookback internally
-            df_year = run_scanner(start_date=start_date,end_date=end_date, file_name=str(year))
-            print(f"✅ Completed for {year} | Rows found: {len(df_year)}")
-
-            if not df_year.empty:
-                df_year['year'] = year
-                all_years_results.append(df_year)
-
-        # ---------------- COMBINE RESULTS ----------------
-        if all_years_results:
-            final_df = pd.concat(all_years_results, ignore_index=True)
-            print(f"✅ Multi-year scanner completed | Total rows: {len(final_df)}")
-        else:
-            final_df = pd.DataFrame()
-            print("⚠ No results across all years")
-
-        # ---------------- OPTIONAL BACKTEST ----------------
-        df_backtest = backtest_all_scanners()
-        print("✅ Backtest completed")
-        print(df_backtest)
-
-        return final_df
-
-    except Exception as e:
-        print(f"❌ Multi-year scanner failed | {e}")
         traceback.print_exc()
         return pd.DataFrame()

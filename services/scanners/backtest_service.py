@@ -1,210 +1,156 @@
 import os
 import pandas as pd
 import traceback
-from datetime import datetime
-from config.logger import log
 from config.paths import SCANNER_FOLDER
 from db.connection import get_db_connection, close_db_connection
 from services.scanners.export_service import export_to_csv
+from config.logger import log  # Assuming you have a log() function
 
 #################################################################################################
 # Backtests all CSV scanner files in SCANNER_FOLDER.
-# Exports a summary Excel with each file as a row and statistics as columns.
-#################################################################################################  
-def backtest_all_scanners():
+# Buys next day's open, holds for `forward_days`, calculates gain/loss.
+# No stop loss is applied.
+#################################################################################################
+def backtest_all_scanners(forward_days: int = 5):
+    all_trades = []
+    summary_list = []
+
     try:
-        results = []
-
-        # Find all scanner CSVs
-        csv_files = [
-            f for f in os.listdir(SCANNER_FOLDER)
-            if f.lower().endswith(".csv")
-        ]
-
+        csv_files = [f for f in os.listdir(SCANNER_FOLDER) if f.endswith(".csv")]
         if not csv_files:
-            print(f"❌ No scanner CSV files found in {SCANNER_FOLDER}")
-            return
+            log("❌ No scanner CSVs found")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         conn = get_db_connection()
+        log(f"🔍 Starting backtest on {len(csv_files)} scanner files for {forward_days} forward days...")
 
         for file_name in csv_files:
-            filepath = os.path.join(SCANNER_FOLDER, file_name)
+            path = os.path.join(SCANNER_FOLDER, file_name)
             try:
-                df_csv = pd.read_csv(filepath, dtype={'date': 'object'})
+                df_csv = pd.read_csv(path)
+                if 'date' not in df_csv.columns:
+                    log(f"⚠ Skipping {file_name} | 'date' column missing")
+                    continue
                 df_csv['date'] = pd.to_datetime(df_csv['date'])
-                required_cols = ['symbol_id', 'symbol', 'date']
-                if not all(col in df_csv.columns for col in required_cols):
-                    print(f"⚠ Skipping {file_name}: missing columns {required_cols}")
+
+                required_cols = ['symbol_id','symbol','date']
+                missing = [c for c in required_cols if c not in df_csv.columns]
+                if missing:
+                    log(f"⚠ Skipping {file_name} | Missing columns: {missing}")
                     continue
 
                 trades = []
 
                 for _, row in df_csv.iterrows():
-                    symbol_id = row['symbol_id']
-                    symbol = row['symbol']
-                    signal_date = row['date']
+                    try:
+                        symbol_id = row['symbol_id']
+                        symbol = row['symbol']
+                        signal_date = row['date']
 
-                    # Buy next trading day
-                    price_sql = """
-                        SELECT date, open, close
-                        FROM equity_price_data
-                        WHERE symbol_id = ? AND timeframe='1d' AND date > ?
-                        ORDER BY date ASC
-                        LIMIT 1
-                    """
-                    buy_df = pd.read_sql(price_sql, conn, params=(symbol_id, signal_date.strftime("%Y-%m-%d")))
-                    if buy_df.empty or pd.isna(buy_df.iloc[0]['open']):
-                        continue
+                        # ---------------- NEXT DAY ENTRY ----------------
+                        entry_sql = """
+                            SELECT date, open
+                            FROM equity_price_data
+                            WHERE symbol_id = ? AND timeframe='1d' AND date > ?
+                            ORDER BY date ASC
+                            LIMIT 1
+                        """
+                        entry_df = pd.read_sql(entry_sql, conn, params=(symbol_id, signal_date.strftime("%Y-%m-%d")))
+                        if entry_df.empty:
+                            continue
 
-                    buy_date = buy_df.iloc[0]['date']
-                    buy_price = buy_df.iloc[0]['open']
+                        entry_date = pd.to_datetime(entry_df.iloc[0]['date'])
+                        entry_price = entry_df.iloc[0]['open']
 
-                    # ATR
-                    atr_sql = """
-                        SELECT atr_14
-                        FROM equity_indicators
-                        WHERE symbol_id = ? AND timeframe='1d' AND date = ?
-                    """
-                    atr_df = pd.read_sql(atr_sql, conn, params=(symbol_id, buy_date))
-                    if atr_df.empty or pd.isna(atr_df.iloc[0]['atr_14']):
-                        continue
-                    atr = atr_df.iloc[0]['atr_14']
+                        # ---------------- FORWARD SCAN ----------------
+                        fwd_sql = """
+                            SELECT date, close
+                            FROM equity_price_data
+                            WHERE symbol_id = ? AND timeframe='1d' AND date >= ?
+                            ORDER BY date ASC
+                            LIMIT ?
+                        """
+                        fwd_df = pd.read_sql(fwd_sql, conn, params=(symbol_id, entry_date.strftime("%Y-%m-%d"), forward_days))
+                        if fwd_df.empty:
+                            continue
 
-                    # Swing low last 10 days
-                    swing_sql = """
-                        SELECT MIN(low) AS swing_low
-                        FROM equity_price_data
-                        WHERE symbol_id = ? AND timeframe='1d' AND date < ?
-                          AND date >= date(?, '-10 day')
-                    """
-                    swing_df = pd.read_sql(swing_sql, conn, params=(symbol_id, buy_date, buy_date))
-                    swing_low = swing_df.iloc[0]['swing_low'] if not swing_df.empty else buy_price - atr
-                    if pd.isna(swing_low):
-                        swing_low = buy_price - atr
+                        exit_price = fwd_df.iloc[-1]['close']
+                        exit_date = pd.to_datetime(fwd_df.iloc[-1]['date'])
 
-                    stop_loss = min(buy_price - atr, swing_low)
-                    target = buy_price * 1.10
+                        gain_pct = round((exit_price - entry_price) / entry_price * 100, 2)
+                        trades.append({
+                            "scanner": file_name.replace(".csv",""),
+                            "symbol": symbol,
+                            "symbol_id": symbol_id,
+                            "signal_date": signal_date,
+                            "entry_date": entry_date,
+                            "entry_price": entry_price,
+                            "exit_date": exit_date,
+                            "exit_price": exit_price,
+                            "gain_pct": gain_pct,
+                            "win": gain_pct > 0,
+                            "holding_days": len(fwd_df)
+                        })
+                        all_trades.append(trades[-1])
 
-                    # Forward scan for exit
-                    forward_sql = """
-                        SELECT date, close
-                        FROM equity_price_data
-                        WHERE symbol_id = ? AND timeframe='1d' AND date >= ?
-                        ORDER BY date ASC
-                    """
-                    forward_df = pd.read_sql(forward_sql, conn, params=(symbol_id, buy_date))
+                    except Exception as e_trade:
+                        log(f"⚠ Error processing trade for {row.get('symbol')} on {row.get('date')} | {e_trade}")
+                        traceback.print_exc()
 
-                    exit_price = None
-                    exit_date = None
-                    exit_reason = "EOD"
-
-                    for _, p in forward_df.iterrows():
-                        close_price = p['close']
-                        if close_price <= stop_loss:
-                            exit_price = close_price
-                            exit_date = p['date']
-                            exit_reason = "STOP"
-                            break
-                        if close_price >= target:
-                            exit_price = close_price
-                            exit_date = p['date']
-                            exit_reason = "TARGET"
-                            break
-
-                    if exit_price is None and not forward_df.empty:
-                        exit_price = forward_df.iloc[-1]['close']
-                        exit_date = forward_df.iloc[-1]['date']
-
-                    if exit_price is None:
-                        continue
-
-                    gain_pct = round((exit_price - buy_price) / buy_price * 100, 2)
-                    trades.append({
-                        "win": gain_pct > 0,
-                        "gain_pct": gain_pct,
-                        "exit_reason": exit_reason
-                    })
-
-                # Compute summary
+                # ---------------- SUMMARY PER FILE ----------------
                 if trades:
-                    trades_df = pd.DataFrame(trades)
-                    win_rate = trades_df['win'].mean() * 100
-                    avg_return = trades_df['gain_pct'].mean()
-                    max_gain = trades_df['gain_pct'].max()
-                    max_loss = trades_df['gain_pct'].min()
-                    cumulative = (1 + trades_df['gain_pct']/100).cumprod()
-                    running_max = cumulative.cummax()
-                    drawdown = (cumulative - running_max) / running_max * 100
-                    max_drawdown = drawdown.min()
-                    stop_count = len(trades_df[trades_df['exit_reason']=="STOP"])
-                else:
-                    win_rate = avg_return = max_gain = max_loss = max_drawdown = stop_count = 0
-
-                results.append({
-                    "file_name": file_name.replace(".csv",""),
-                    "total_trades": len(trades),
-                    "win_rate_%": round(win_rate,2),
-                    "avg_return_%": round(avg_return,2),
-                    "max_gain_%": round(max_gain,2),
-                    "max_loss_%": round(max_loss,2),
-                    "max_drawdown_%": round(max_drawdown,2),
-                    "stop_loss_trades": stop_count
-                })
+                    df_trades = pd.DataFrame(trades)
+                    summary_list.append({
+                        "scanner": file_name.replace(".csv",""),
+                        "total_trades": len(df_trades),
+                        "win_rate_%": round(df_trades['win'].mean()*100,2),
+                        "avg_gain_%": round(df_trades['gain_pct'].mean(),2),
+                        "max_gain_%": round(df_trades['gain_pct'].max(),2),
+                        "max_loss_%": round(df_trades['gain_pct'].min(),2)
+                    })
+                    log(f"✅ Backtested {file_name} | Trades: {len(df_trades)} | Win rate: {round(df_trades['win'].mean()*100,2)}%")
 
             except Exception as e_file:
-                print(f"❌ Error processing {file_name} | {e_file}")
+                log(f"❌ Error processing {file_name} | {e_file}")
                 traceback.print_exc()
 
-        close_db_connection(conn)
-
-        # Export summary
-        result_df = pd.DataFrame(results)
-        export_to_csv(result_df, SCANNER_FOLDER, "backtest_results")
-        # print(f"\n✅ Backtest summary saved: {output_file}")
-        return result_df
-
-    except Exception as e:
-        log(f"❌ backtest_all_scanners failed | {e}")
+    except Exception as e_main:
+        log(f"❌ Backtest failed | {e_main}")
         traceback.print_exc()
-# def backtest_scanner(file_name: str):
-#     """Backtest a scanner CSV by buying next day's open and selling 5 days later."""
-#     try:
-#         filepath = os.path.join(SCANNER_FOLDER, file_name)
-#         df = pd.read_csv(filepath, dtype={'date': 'object'})
-#         df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d')
-#         required_cols = ['symbol_id', 'symbol', 'date']
-#         if not all(col in df.columns for col in required_cols):
-#             raise ValueError(f"File must contain columns: {required_cols}")
 
-#         df = df.sort_values(['date', 'symbol']).reset_index(drop=True)
-#         conn = get_db_connection()
-#         gains = []
+    finally:
+        if 'conn' in locals() and conn:
+            close_db_connection(conn)
+            log("🔒 Database connection closed")
 
-#         for _, row in df.iterrows():
-#             symbol_id = row['symbol_id']
-#             signal_date = row['date']
-#             sql = """
-#                 SELECT date, open, close
-#                 FROM equity_price_data
-#                 WHERE symbol_id = ? AND date >= ? AND timeframe='1d'
-#                 ORDER BY date ASC
-#                 LIMIT 6
-#             """
-#             df_price = pd.read_sql(sql, conn, params=(symbol_id, signal_date.strftime("%Y-%m-%d")))
-#             if len(df_price) < 2:
-#                 gains.append(None)
-#                 continue
-#             buy_price = df_price.iloc[1]['open']
-#             sell_price = df_price.iloc[5]['close'] if len(df_price) >= 6 else df_price.iloc[-1]['close']
-#             gains.append(round((sell_price - buy_price)/buy_price*100, 2))
+    # ---------------- CREATE DATAFRAMES ----------------
+    trades_df = pd.DataFrame(all_trades)
+    summary_df = pd.DataFrame(summary_list)
 
-#         df['gain_5d_pct'] = gains
-#         df['win_5d'] = df['gain_5d_pct'] > 0
-#         print(f"📈 Win Rate (5D): {df['win_5d'].mean()*100:.2f}%")
-#         print(f"❌ Max Loss (5D): {df['gain_5d_pct'].min():.2f}%")
-#         close_db_connection(conn)
-#         print("Backtest completed successfully!")
+    # ---------------- PER SYMBOL SUMMARY ----------------
+    if not trades_df.empty:
+        symbol_summary_df = trades_df.groupby('symbol').agg(
+            total_trades=('gain_pct','count'),
+            win_rate_pct=('win','mean'),
+            avg_gain_pct=('gain_pct','mean'),
+            max_gain_pct=('gain_pct','max'),
+            max_loss_pct=('gain_pct','min')
+        ).reset_index()
+        symbol_summary_df['win_rate_pct'] = (symbol_summary_df['win_rate_pct']*100).round(2)
+        symbol_summary_df['avg_gain_pct'] = symbol_summary_df['avg_gain_pct'].round(2)
+        symbol_summary_df['max_gain_pct'] = symbol_summary_df['max_gain_pct'].round(2)
+        symbol_summary_df['max_loss_pct'] = symbol_summary_df['max_loss_pct'].round(2)
+    else:
+        symbol_summary_df = pd.DataFrame()
 
-#     except Exception as e:
-#         log(f"❌ backtest_scanner failed | {e}")
-#         traceback.print_exc()
+    # ---------------- EXPORT 3 SEPARATE CSV FILES ----------------
+    try:
+        export_to_csv(summary_df, SCANNER_FOLDER, "backtest_summary")
+        export_to_csv(trades_df, SCANNER_FOLDER, "backtest_trades")
+        export_to_csv(symbol_summary_df, SCANNER_FOLDER, "backtest_symbol_summary")
+        log(f"✅ Backtest exported | Summary: {len(summary_df)} | Trades: {len(trades_df)} | Symbol summary: {len(symbol_summary_df)}")
+    except Exception as e_export:
+        log(f"❌ Failed to export CSVs | {e_export}")
+        traceback.print_exc()
+
+    return summary_df, trades_df, symbol_summary_df
