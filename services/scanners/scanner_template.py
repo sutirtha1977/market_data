@@ -3,7 +3,7 @@ import pandas as pd
 import traceback
 from datetime import datetime, timedelta
 from services.cleanup_service import delete_files_in_folder
-from services.scanners.export_service import export_to_csv
+from services.scanners.export_import_service import export_to_csv
 from db.connection import get_db_connection, close_db_connection
 from services.scanners.backtest_service import backtest_all_scanners
 from config.paths import SCANNER_FOLDER
